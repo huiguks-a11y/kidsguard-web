@@ -58,6 +58,37 @@
   .hist div{font-size:14px;color:var(--muted);padding:3px 0}
   .hist .today{color:var(--text);font-weight:600}
   details{margin-top:10px}
+  .sheet{
+    position:fixed;inset:0;background:var(--bg);z-index:40;overflow-y:auto;
+    padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);display:none
+  }
+  .sheet.open{display:block}
+  .sheet .bar{
+    position:sticky;top:0;background:var(--bg);padding:12px 16px;
+    border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;z-index:2
+  }
+  .sheet .bar b{flex:1;font-size:17px}
+  .grp{font-weight:700;margin:0 0 10px}
+  .item{display:flex;align-items:center;gap:10px;padding:9px 0}
+  .item .lab{flex:1;font-size:15px}
+  .item .val{font-size:15px;font-weight:600;color:var(--brand);min-width:74px;text-align:right}
+  input[type=range]{width:100%;accent-color:var(--brand)}
+  .seg{display:flex;gap:6px;margin:6px 0}
+  .seg button{flex:1;padding:10px 4px;font-size:14px}
+  .seg button.on{background:var(--brand);color:#fff}
+  .sw{
+    width:52px;height:31px;border-radius:999px;background:#D6D2E0;position:relative;
+    flex:none;cursor:pointer;transition:.2s;border:none
+  }
+  .sw.on{background:var(--brand)}
+  .sw::after{
+    content:"";position:absolute;top:3px;left:3px;width:25px;height:25px;
+    border-radius:50%;background:#fff;transition:.2s
+  }
+  .sw.on::after{left:24px}
+  .tabs{display:flex;gap:6px;margin-bottom:10px}
+  .tabs button{flex:1}
+  .tabs button.on{background:var(--brand);color:#fff}
   summary{font-size:14px;color:var(--brand);cursor:pointer;padding:6px 0}
 </style>
 </head>
@@ -93,6 +124,16 @@
   </div>
 
 </div>
+
+<!-- 설정 화면 -->
+<div class="sheet" id="sheet">
+  <div class="bar">
+    <button class="small" id="sheetClose">← 뒤로</button>
+    <b id="sheetName">설정</b>
+  </div>
+  <div class="wrap" id="sheetBody"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script type="module">
@@ -292,6 +333,8 @@ function render(children){
         <button class="small" data-cmd="REQUEST_LOCATION" data-cid="${cid}">📍 위치 요청</button>
         <button class="small" data-map="${cid}" ${st.lat?"":"disabled"}>🗺️ 지도</button>
       </div>
+      <div style="height:8px"></div>
+      <button class="primary wide" data-settings="${cid}">⚙️ 이 아이 설정 바꾸기</button>
       ${renderHist(st)}
     `;
     box.appendChild(el);
@@ -299,6 +342,9 @@ function render(children){
 
   box.querySelectorAll("button[data-cmd]").forEach(b => {
     b.onclick = () => sendCmd(b.dataset.cid, b.dataset.cmd, +(b.dataset.min||0), b);
+  });
+  box.querySelectorAll("button[data-settings]").forEach(b => {
+    b.onclick = () => openSettings(b.dataset.settings, children[b.dataset.settings]);
   });
   box.querySelectorAll("button[data-map]").forEach(b => {
     b.onclick = () => {
@@ -343,6 +389,188 @@ async function sendCmd(cid, type, minutes, btn){
   } finally {
     setTimeout(()=>{ btn.disabled = false; }, 800);
   }
+}
+
+
+// ================= 설정 화면 =================
+let curCid = null, curSt = {};
+
+$("sheetClose").onclick = () => $("sheet").classList.remove("open");
+
+/** 설정 한 개를 자녀 폰에 보낸다 (앱과 동일한 SET_VALUE 형식) */
+async function setVal(key, value){
+  try {
+    await set(ref(db, `families/${familyId}/children/${curCid}/command`), {
+      type: "SET_VALUE", minutes: 0, payload: `${key}=${value}`,
+      issuedAt: Date.now(), issuedBy: "web"
+    });
+    toast("전송했습니다");
+  } catch(e){ console.error(e); toast("전송 실패"); }
+}
+
+function sw(label, key, on, hint){
+  return `<div class="item"><div class="lab">${label}</div>
+    <button class="sw ${on?"on":""}" data-sw="${key}" data-on="${on?1:0}"></button></div>
+    ${hint?`<div class="hint">${hint}</div>`:""}`;
+}
+function sl(label, key, val, min, max, step, unit){
+  return `<div class="item"><div class="lab">${label}</div>
+    <div class="val" id="v_${key}">${val}${unit||""}</div></div>
+    <input type="range" data-sl="${key}" min="${min}" max="${max}" step="${step}" value="${val}"
+           data-unit="${unit||""}">`;
+}
+function seg(label, key, cur, opts, hint){
+  return `<div class="grp" style="margin-top:12px">${label}</div>
+    <div class="seg">${opts.map((o,i)=>
+      `<button class="${cur===i?"on":""}" data-seg="${key}" data-v="${i}">${o}</button>`).join("")}</div>
+    ${hint?`<div class="hint">${hint}</div>`:""}`;
+}
+
+function openSettings(cid, child){
+  curCid = cid;
+  const st = (child && child.status) || {};
+  curSt = st;
+  $("sheetName").textContent = ((child&&child.profile&&child.profile.name) || st.name || "자녀") + " 설정";
+
+  const isWe = new Date().getDay() === 0 || new Date().getDay() === 6;
+  const p = isWe ? "we_" : "wd_";
+  const brk  = isWe ? (st.weBreakMin ?? 0)    : (st.wdBreakMin ?? 0);
+  const bdur = isWe ? (st.weBreakDurMin ?? 5) : (st.wdBreakDurMin ?? 5);
+  const day  = isWe ? (st.weDailyMin ?? 0)    : (st.wdDailyMin ?? 0);
+  const bedOn= isWe ? !!st.weBedOn            : !!st.wdBedOn;
+  const bedS = isWe ? (st.weBedStart ?? 21)   : (st.wdBedStart ?? 21);
+  const bedE = isWe ? (st.weBedEnd ?? 7)      : (st.wdBedEnd ?? 7);
+
+  $("sheetBody").innerHTML = `
+    <div class="card">
+      <div class="grp">⏰ 오늘(${isWe?"주말":"평일"}) 시간 규칙</div>
+      <div class="hint">지금 요일에 적용되는 값입니다. 다른 요일 설정은 안드로이드 부모 앱에서 바꿀 수 있어요.</div>
+      ${sl("연속 사용 제한","%BRK%",brk,0,180,10," 분")}
+      <div class="hint">0이면 끔. 이만큼 쉬지 않고 쓰면 휴식 화면이 뜹니다.</div>
+      ${sl("휴식 길이","%BDUR%",bdur,1,30,1," 분")}
+      ${sl("하루 총 사용","%DAY%",day,0,600,10," 분")}
+      <div class="hint">0이면 무제한.</div>
+      ${sw("취침 잠금","%BEDON%",bedOn)}
+      ${sl("취침 시작","%BEDS%",bedS,17,24,1,"시")}
+      ${sl("취침 끝","%BEDE%",bedE,4,12,1,"시")}
+      <div style="height:10px"></div>
+      <button class="wide" id="resetUsage">오늘 사용 시간 0으로 초기화</button>
+    </div>
+
+    <div class="card">
+      <div class="grp">👀 눈 보호 (거리)</div>
+      ${sw("거리 감지 사용","distance_guard_on", st.distanceGuardOn !== false,
+           "끄면 카메라를 쓰지 않아 화면이 어두워지거나 차단되지 않습니다. 시간 제한·위치·원격 제어는 그대로예요.")}
+      ${sl("최소 거리","min_distance_cm", st.minDistanceCm ?? 30, 15, 60, 1, " cm")}
+      <div class="hint">이 거리보다 가까워지면 화면이 어두워집니다.</div>
+      ${sl("해제 여유","release_margin_cm", st.releaseMarginCm ?? 2, 0, 10, 1, " cm")}
+      ${sw("더 가까우면 화면 완전 차단","blackout_enabled", !!st.blackoutOn)}
+      ${sl("완전 차단 거리","blackout_distance_cm", st.blackoutCm ?? 14, 8, 40, 1, " cm")}
+      ${sw("블루라이트 필터","eye_filter_enabled", !!st.eyeFilterOn)}
+      ${sw("근접 센서 보조","proximity_enabled", !!st.proximityOn,
+           "5cm 이내 접근을 카메라 없이 잡습니다. 기종에 따라 오작동하면 꺼주세요.")}
+    </div>
+
+    <div class="card">
+      <div class="grp">🔊 볼륨</div>
+      ${sl("최대 볼륨","max_volume_percent", st.maxVolume ?? 60, 10, 100, 5, " %")}
+    </div>
+
+    <div class="card">
+      ${seg("🔋 감지 방식","power_mode", st.powerMode ?? 1,
+        ["정확","균형","절전"],
+        ["정확 — 카메라를 항상 켜둡니다. 반응이 빠르지만 발열이 큽니다.",
+         "균형(권장) — 안전한 거리면 카메라를 7초씩 쉽니다.",
+         "절전 — 15초씩 쉽니다. 발열이 가장 적지만 반응이 늦습니다."][st.powerMode ?? 1])}
+      ${seg("🌡️ 발열 대응","thermal_mode", st.thermalMode ?? 1,
+        ["온도 무시","자동 조절","기준 온도"],
+        ["온도 무시 — 뜨거워도 감지를 멈추지 않습니다.",
+         "자동 조절 — 온도가 오르면 확인 간격을 늘리고 식으면 복구합니다.",
+         "기준 온도 — 설정 온도를 넘으면 카메라를 끕니다."][st.thermalMode ?? 1])}
+      ${sl("온도 무시 모드 확인 간격","ignore_mode_check_sec", st.ignoreCheckSec ?? 15, 5, 120, 5, " 초")}
+      ${sl("카메라 끌 온도","thermal_stop_temp", st.thermalStopTempC ?? 43, 38, 48, 1, " ℃")}
+    </div>
+
+    <div class="card">
+      <div class="grp">📞 잠금 중 허용</div>
+      ${sw("전화 허용","allow_calls", !!st.allowCalls)}
+      ${sw("문자 허용","allow_sms", !!st.allowSms)}
+      ${sw("허용 앱 시간대 제한","allowed_apps_window_on", !!st.appsWindowOn)}
+      ${sl("시작 시각","allowed_apps_start", st.appsStartHour ?? 7, 0, 23, 1, "시")}
+      ${sl("끝 시각","allowed_apps_end", st.appsEndHour ?? 21, 0, 23, 1, "시")}
+      <div class="hint">허용 앱 목록은 자녀 폰이나 안드로이드 부모 앱에서 고를 수 있습니다.</div>
+    </div>
+
+    <div class="card">
+      <div class="grp">📍 위치 · 알림</div>
+      ${sw("위치 문자 보내기","location_enabled", !!st.locationOn)}
+      ${sl("정기 발송 간격","location_interval_min", st.locIntervalMin ?? 60, 10, 240, 10, " 분")}
+      ${sw("'위치' 문자 오면 답장","sms_request_enabled", !!st.smsRequestOn)}
+      ${sw("안전 구역 이탈 알림","geofence_mode", !!st.geoModeOn)}
+      ${sl("구역 반경","geofence_radius_m", st.geoRadiusM ?? 500, 100, 3000, 100, " m")}
+      ${sw("구역 복귀 문자","return_sms_enabled", !!st.returnSmsOn)}
+      ${sw("재부팅 알림","boot_sms_enabled", !!st.bootSmsOn)}
+      ${sw("삭제 시도 알림","tamper_alert_enabled", !!st.tamperAlertOn)}
+    </div>
+
+    <div class="card">
+      <div class="grp">⏳ 연속 사용 판정</div>
+      ${sl("미사용 초기화","idle_reset_min", st.idleResetMin ?? 10, 1, 60, 1, " 분")}
+      <div class="hint">화면을 이 시간 이상 꺼두면 연속 사용 시간이 0이 됩니다.</div>
+    </div>
+
+    <div class="card">
+      <div class="grp">✋ 카메라 가림 대응</div>
+      ${seg("가림 감지","covered_action", st.coveredAction ?? 1, ["무시","알림만","알림+차단"])}
+      ${sl("가림 판정 시간","covered_alert_sec", st.coveredAlertSec ?? 60, 15, 300, 15, " 초")}
+      <div class="grp" style="margin-top:14px">📷 거리 감지 미시작 대응</div>
+      ${sl("알림까지","cam_idle_alert_min", st.camIdleAlertMin ?? 10, 1, 60, 1, " 분")}
+      ${sw("그래도 안 켜면 사용 차단","cam_idle_lock", !!st.camIdleLockOn)}
+    </div>
+    <div style="height:24px"></div>
+  `
+  .replaceAll("%BRK%",  p+"break_interval_min")
+  .replaceAll("%BDUR%", p+"break_duration_min")
+  .replaceAll("%DAY%",  p+"daily_limit_min")
+  .replaceAll("%BEDON%",p+"bedtime_enabled")
+  .replaceAll("%BEDS%", p+"bedtime_start_hour")
+  .replaceAll("%BEDE%", p+"bedtime_end_hour");
+
+  // 스위치
+  $("sheetBody").querySelectorAll("button[data-sw]").forEach(b=>{
+    b.onclick = () => {
+      const on = b.dataset.on === "1" ? 0 : 1;
+      b.dataset.on = on; b.classList.toggle("on", on===1);
+      setVal(b.dataset.sw, on===1 ? "true" : "false");
+    };
+  });
+  // 슬라이더 (손을 뗄 때 전송)
+  $("sheetBody").querySelectorAll("input[data-sl]").forEach(r=>{
+    const out = $("v_"+r.dataset.sl);
+    r.oninput  = () => { if(out) out.textContent = r.value + (r.dataset.unit||""); };
+    r.onchange = () => setVal(r.dataset.sl, r.value);
+  });
+  // 3단 선택
+  $("sheetBody").querySelectorAll("button[data-seg]").forEach(b=>{
+    b.onclick = () => {
+      const key = b.dataset.seg;
+      $("sheetBody").querySelectorAll(`button[data-seg="${key}"]`)
+        .forEach(x=>x.classList.remove("on"));
+      b.classList.add("on");
+      setVal(key, b.dataset.v);
+    };
+  });
+  // 사용시간 초기화
+  $("resetUsage").onclick = async () => {
+    await set(ref(db, `families/${familyId}/children/${curCid}/command`), {
+      type: "SET_VALUE", minutes: 0, payload: "__reset_usage__=1",
+      issuedAt: Date.now(), issuedBy: "web"
+    });
+    toast("오늘 사용 시간을 초기화했습니다");
+  };
+
+  $("sheet").classList.add("open");
+  window.scrollTo(0,0);
 }
 
 // 저장된 로그인으로 자동 연결
