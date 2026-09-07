@@ -303,6 +303,12 @@ function render(children){
       ${extra>0?`<div class="meta">📱 실제 사용 ${fmtMin(real)} (한도 ${fmtMin(usage)} + 부여 ${extra}분)</div>`:""}
       <div class="meta">오늘 ${usage}분${limit>0?` / ${limit}분`:""}${
         st.tempC?` · 🌡️ ${Math.round(st.tempC)}℃`:""}</div>
+      ${(st.locked && st.lockPaused) ? `<div class="meta warn">🔓 지금 잠금이 내려가 있습니다${
+        st.bypassReason?` — ${st.bypassReason}`:""}${st.foregroundPkg?` (앞 앱: ${st.foregroundPkg})`:""}</div>` : ""}
+      ${!stale ? `<div class="meta">🔗 원격 제어: ${
+        st.listening ? `가능${st.appVersion?` (v${st.appVersion})`:""}`
+                     : "⚠️ 불가 — 자녀 폰 앱을 최신으로 설치하고 한 번 열어주세요"}</div>` : ""}
+      ${st.accessibilityOn === false ? `<div class="meta warn">⚠️ 접근성 서비스 꺼짐 — 잠금 중 허용 앱을 열면 다른 앱도 쓸 수 있게 됩니다. 자녀 폰 설정 → 접근성 → 키즈가드를 켜주세요.</div>` : ""}
       <div class="meta">📷 거리 감지: ${
         st.distanceGuardOn === false ? "꺼짐"
         : st.cameraActive ? "작동 중" : "⚠️ 대기 중"}</div>
@@ -393,9 +399,9 @@ async function sendCmd(cid, type, minutes, btn){
 
 
 // ================= 설정 화면 =================
-let curCid = null, curSt = {};
+let curCid = null, curSt = {}, curChild = null;
 
-$("sheetClose").onclick = () => $("sheet").classList.remove("open");
+$("sheetClose").onclick = () => { curTab = null; $("sheet").classList.remove("open"); };
 
 /** 설정 한 개를 자녀 폰에 보낸다 (앱과 동일한 SET_VALUE 형식) */
 async function setVal(key, value){
@@ -427,12 +433,19 @@ function seg(label, key, cur, opts, hint){
 }
 
 function openSettings(cid, child){
-  curCid = cid;
+  curCid = cid; curChild = child;
   const st = (child && child.status) || {};
   curSt = st;
   $("sheetName").textContent = ((child&&child.profile&&child.profile.name) || st.name || "자녀") + " 설정";
 
-  const isWe = new Date().getDay() === 0 || new Date().getDay() === 6;
+  const dow = new Date().getDay();
+  const todayIsWe = dow === 0 || dow === 6;
+  renderSettings(st, curTab === null ? todayIsWe : curTab, todayIsWe);
+}
+
+let curTab = null;   // null=오늘 요일, true=주말, false=평일
+
+function renderSettings(st, isWe, todayIsWe){
   const p = isWe ? "we_" : "wd_";
   const brk  = isWe ? (st.weBreakMin ?? 0)    : (st.wdBreakMin ?? 0);
   const bdur = isWe ? (st.weBreakDurMin ?? 5) : (st.wdBreakDurMin ?? 5);
@@ -443,8 +456,11 @@ function openSettings(cid, child){
 
   $("sheetBody").innerHTML = `
     <div class="card">
-      <div class="grp">⏰ 오늘(${isWe?"주말":"평일"}) 시간 규칙</div>
-      <div class="hint">지금 요일에 적용되는 값입니다. 다른 요일 설정은 안드로이드 부모 앱에서 바꿀 수 있어요.</div>
+      <div class="grp">⏰ 시간 규칙</div>
+      <div class="tabs">
+        <button class="${!isWe?"on":""}" data-tab="0">평일${!todayIsWe?" (오늘)":""}</button>
+        <button class="${isWe?"on":""}" data-tab="1">주말${todayIsWe?" (오늘)":""}</button>
+      </div>
       ${sl("연속 사용 제한","%BRK%",brk,0,180,10," 분")}
       <div class="hint">0이면 끔. 이만큼 쉬지 않고 쓰면 휴식 화면이 뜹니다.</div>
       ${sl("휴식 길이","%BDUR%",bdur,1,30,1," 분")}
@@ -455,6 +471,13 @@ function openSettings(cid, child){
       ${sl("취침 끝","%BEDE%",bedE,4,12,1,"시")}
       <div style="height:10px"></div>
       <button class="wide" id="resetUsage">오늘 사용 시간 0으로 초기화</button>
+    </div>
+
+    <div class="card">
+      <div class="grp">✨ 보호 기능</div>
+      ${sw("보호 기능 켜기","enabled", st.protectionOn !== false,
+           "끄면 모든 보호가 멈춥니다. 시간 제한도 동작하지 않아요.")}
+      ${sw("카메라 이상이면 사용 차단","camera_fault_lock", !!st.camFaultLockOn)}
     </div>
 
     <div class="card">
@@ -508,6 +531,7 @@ function openSettings(cid, child){
       ${sw("'위치' 문자 오면 답장","sms_request_enabled", !!st.smsRequestOn)}
       ${sw("안전 구역 이탈 알림","geofence_mode", !!st.geoModeOn)}
       ${sl("구역 반경","geofence_radius_m", st.geoRadiusM ?? 500, 100, 3000, 100, " m")}
+      ${sl("구역 밖 발송 간격","outside_interval_min", st.outIntervalMin ?? 120, 10, 360, 10, " 분")}
       ${sw("구역 복귀 문자","return_sms_enabled", !!st.returnSmsOn)}
       ${sw("재부팅 알림","boot_sms_enabled", !!st.bootSmsOn)}
       ${sw("삭제 시도 알림","tamper_alert_enabled", !!st.tamperAlertOn)}
@@ -536,6 +560,10 @@ function openSettings(cid, child){
   .replaceAll("%BEDS%", p+"bedtime_start_hour")
   .replaceAll("%BEDE%", p+"bedtime_end_hour");
 
+  // 평일/주말 탭
+  $("sheetBody").querySelectorAll("button[data-tab]").forEach(b=>{
+    b.onclick = () => { curTab = b.dataset.tab === "1"; openSettings(curCid, curChild); };
+  });
   // 스위치
   $("sheetBody").querySelectorAll("button[data-sw]").forEach(b=>{
     b.onclick = () => {
