@@ -298,11 +298,14 @@ function render(children){
       <div class="big">${
         paused ? (isLock ? "🔒 부모님이 잠금" : "⏸️ 잠시 멈춤")
                : locked ? `🔒 잠금 중${st.lockReason?` (${st.lockReason})`:""}`
+               : st.pendingLockReason ? `⏳ 폰을 켜면 잠김 (${st.pendingLockReason})`
                : "사용 가능"
       }${ovr>0?` · 임시해제 ${ovr}분`:""}</div>
       ${extra>0?`<div class="meta">📱 실제 사용 ${fmtMin(real)} (한도 ${fmtMin(usage)} + 부여 ${extra}분)</div>`:""}
       <div class="meta">오늘 ${usage}분${limit>0?` / ${limit}분`:""}${
         st.tempC?` · 🌡️ ${Math.round(st.tempC)}℃`:""}</div>
+      ${(!st.locked && st.pendingLockReason) ? `<div class="meta warn">⏳ 지금 잠겨야 하는 상태입니다 (${st.pendingLockReason})${
+        st.lockSuppressReason?` — ${st.lockSuppressReason}`:""}</div>` : ""}
       ${(st.locked && st.lockPaused) ? `<div class="meta warn">🔓 지금 잠금이 내려가 있습니다${
         st.bypassReason?` — ${st.bypassReason}`:""}${st.foregroundPkg?` (앞 앱: ${st.foregroundPkg})`:""}</div>` : ""}
       ${!stale ? `<div class="meta">🔗 원격 제어: ${
