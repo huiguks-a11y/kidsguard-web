@@ -199,13 +199,24 @@ $("loginBtn").onclick = async () => {
     }
     const famId = idSnap.val();
 
-    const snap = await get(ref(db, `families/${famId}/auth/pinHash`));
-    if (!snap.exists()) {
+    // 자녀마다 PIN이 다를 수 있다. 등록된 것 중 하나라도 맞으면 통과시킨다.
+    const want = await pinHash(famId, pin);
+    const pinsSnap = await get(ref(db, `families/${famId}/auth/pins`));
+    const legacy   = await get(ref(db, `families/${famId}/auth/pinHash`));
+    const hashes = [];
+    if (pinsSnap.exists()) hashes.push(...Object.values(pinsSnap.val() || {}));
+    if (legacy.exists()) hashes.push(legacy.val());
+    if (!hashes.length) {
       $("loginErr").textContent = "자녀 폰 앱을 최신으로 업데이트한 뒤 한 번 열어주세요. (PIN 정보가 아직 등록되지 않았습니다)";
       return;
     }
-    const want = await pinHash(famId, pin);
-    if (snap.val() !== want) {
+    let matchedChild = "";
+    if (pinsSnap.exists()) {
+      for (const [cid, h] of Object.entries(pinsSnap.val() || {})) {
+        if (h === want) { matchedChild = cid; break; }
+      }
+    }
+    if (!hashes.includes(want)) {
       const n = (+(localStorage.getItem("kg_fail")||0)) + 1;
       localStorage.setItem("kg_fail", n);
       if (n >= 5) {
@@ -219,7 +230,7 @@ $("loginBtn").onclick = async () => {
     }
     // PIN이 맞으면 이 기기를 부모로 등록한다 (서버 규칙이 PIN을 다시 확인한다)
     await set(ref(db, `families/${famId}/webParents/${uid}`), {
-      pinProof: want, joinedAt: Date.now()
+      pinProof: want, childRef: matchedChild, joinedAt: Date.now()
     });
 
     localStorage.setItem("kg_fail", 0);
@@ -616,12 +627,22 @@ function renderSettings(st, isWe, todayIsWe){
     const uid  = cred.user.uid;
     const id   = famId || (await get(ref(db, `invites/${fam}`))).val();
     if (!id) return;
-    const snap = await get(ref(db, `families/${id}/auth/pinHash`));
     const want = await pinHash(id, pin);
-    if (!snap.exists() || snap.val() !== want) return;
+    const pinsSnap = await get(ref(db, `families/${id}/auth/pins`));
+    const legacy   = await get(ref(db, `families/${id}/auth/pinHash`));
+    const hashes = [];
+    if (pinsSnap.exists()) hashes.push(...Object.values(pinsSnap.val() || {}));
+    if (legacy.exists()) hashes.push(legacy.val());
+    if (!hashes.includes(want)) return;
+    let matchedChild = "";
+    if (pinsSnap.exists()) {
+      for (const [cid, h] of Object.entries(pinsSnap.val() || {})) {
+        if (h === want) { matchedChild = cid; break; }
+      }
+    }
     // 익명 로그인 ID는 바뀔 수 있으므로 매번 등록해 둔다
     await set(ref(db, `families/${id}/webParents/${uid}`), {
-      pinProof: want, joinedAt: Date.now()
+      pinProof: want, childRef: matchedChild, joinedAt: Date.now()
     });
     localStorage.setItem("kg_famId", id);
     start(id);
