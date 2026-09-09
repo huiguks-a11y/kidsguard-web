@@ -90,6 +90,32 @@
   .tabs button{flex:1}
   .tabs button.on{background:var(--brand);color:#fff}
   summary{font-size:14px;color:var(--brand);cursor:pointer;padding:6px 0}
+
+  /* ---- 자녀 알림 팝업 ---- */
+  .modal{
+    position:fixed;inset:0;background:rgba(28,27,34,.45);z-index:60;
+    display:none;align-items:flex-start;justify-content:center;
+    padding:calc(env(safe-area-inset-top) + 24px) 16px 16px;overflow-y:auto
+  }
+  .modal.open{display:flex}
+  .modal .box{
+    background:var(--card);border-radius:20px;padding:20px;width:100%;max-width:420px;
+    box-shadow:0 18px 40px rgba(0,0,0,.22)
+  }
+  .modal h2{font-size:18px;margin:0 0 4px}
+  .alert-item{border-top:1px solid var(--line);padding:10px 0}
+  .alert-item:first-of-type{border-top:none}
+  .alert-item .who{font-size:13px;color:var(--muted)}
+  .alert-item .msg{font-size:16px;font-weight:600;margin-top:2px}
+  .alert-item.newest .msg{font-size:18px}
+  .bell{
+    position:relative;display:flex;align-items:center;gap:8px;
+    font-size:15px;font-weight:600
+  }
+  .badge{
+    background:var(--danger);color:#fff;border-radius:999px;
+    font-size:12px;padding:1px 8px;font-weight:700
+  }
 </style>
 </head>
 <body>
@@ -116,6 +142,22 @@
   <!-- 대시보드 -->
   <div id="dash" style="display:none">
     <h1>👨‍👩‍👧 자녀 관리</h1>
+
+    <!-- 자녀 알림 -->
+    <div class="card">
+      <div class="bell">🔔 자녀 알림 <span class="badge" id="alertBadge" style="display:none">0</span></div>
+      <div class="hint" id="alertHint">
+        재부팅·삭제 시도·안전 구역 이탈 등이 생기면 이 화면에 팝업으로 알려드립니다.
+      </div>
+      <div style="height:8px"></div>
+      <button class="small wide" id="notifBtn">📢 알림 켜기 (화면을 닫아도 받기)</button>
+      <div class="hint" id="notifHint"></div>
+      <details id="alertHistWrap" style="display:none">
+        <summary>지난 알림 보기</summary>
+        <div class="hist" id="alertHist"></div>
+      </details>
+    </div>
+
     <div id="children"></div>
     <div class="card">
       <button class="wide" id="logoutBtn">연결 해제</button>
@@ -123,6 +165,18 @@
     </div>
   </div>
 
+</div>
+
+<!-- 새 알림 팝업 -->
+<div class="modal" id="alertModal">
+  <div class="box">
+    <h2>🛡️ 키즈가드 알림</h2>
+    <div id="alertBody"></div>
+    <div style="height:14px"></div>
+    <div class="row">
+      <button class="primary small" id="alertOkBtn">확인</button>
+    </div>
+  </div>
 </div>
 
 <!-- 설정 화면 -->
@@ -139,7 +193,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getDatabase, ref, onValue, set, get }
+import { getDatabase, ref, onValue, onChildAdded, query, limitToLast, set, get }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 const firebaseConfig = {
@@ -250,6 +304,8 @@ $("logoutBtn").onclick = () => {
   localStorage.removeItem("kg_fam");
   localStorage.removeItem("kg_famId");
   localStorage.removeItem("kg_pin");
+  // 알림 확인 기록은 남겨두지 않는다 (다른 가족으로 연결할 수 있으므로)
+  if (familyId) localStorage.removeItem(`kg_alert_seen_${familyId}`);
   location.reload();
 };
 
@@ -261,11 +317,180 @@ function start(fam){
   if (unsub) unsub();
   unsub = onValue(ref(db, `families/${fam}/children`), snap => {
     render(snap.val() || {});
+    watchAlerts(snap.val() || {});
   }, err => {
     console.error(err);
     toast("연결이 끊겼습니다");
   });
+  updateNotifHint();
 }
+
+/* ================= 자녀 알림 (팝업) =================
+   자녀 폰이 families/{fam}/children/{cid}/alerts 에 남긴 알림을 읽어
+   화면 위에 팝업으로 띄운다. 아이폰은 부모 앱을 설치할 수 없어서
+   이 화면이 곧 부모 앱 역할을 한다.
+
+   화면을 닫아둔 동안에는 브라우저 알림으로 받는다. 아이폰은 홈 화면에
+   추가해 앱처럼 열어야 알림 권한을 줄 수 있다 (iOS 16.4 이상).      */
+
+const seenKey = () => `kg_alert_seen_${familyId}`;
+// 처음 연결한 기기에서 옛 알림이 한꺼번에 쏟아지지 않도록, 마지막 확인 시각이
+// 없으면 '하루 전'부터 본 것으로 친다.
+function lastSeen(){
+  const v = +(localStorage.getItem(seenKey()) || 0);
+  return Math.max(v, Date.now() - 24*60*60*1000);
+}
+function setLastSeen(at){
+  if (at > +(localStorage.getItem(seenKey()) || 0)) {
+    localStorage.setItem(seenKey(), at);
+  }
+}
+
+let alertWatchers = {};   // cid → true (같은 아이에 두 번 걸지 않도록)
+let alertLog = [];        // 최근 알림 (최신순)
+let alertQueue = [];      // 아직 확인하지 않은 알림
+const seenIds = new Set();
+
+function watchAlerts(children){
+  const since = lastSeen();
+  for (const [cid, c] of Object.entries(children)) {
+    if (alertWatchers[cid]) continue;
+    alertWatchers[cid] = true;
+    const name = (c && c.profile && c.profile.name) ||
+                 (c && c.status && c.status.name) || "자녀";
+    const q = query(ref(db, `families/${familyId}/children/${cid}/alerts`), limitToLast(20));
+    onChildAdded(q, snap => {
+      const a = snap.val() || {};
+      const id = `${cid}/${snap.key}`;
+      if (seenIds.has(id)) return;
+      seenIds.add(id);
+      const item = {
+        id, cid, name: a.name || name, text: a.text || "",
+        at: a.at || 0, silent: !!a.silent, lat: a.lat, lng: a.lng
+      };
+      alertLog.unshift(item);
+      alertLog = alertLog.slice(0, 50);
+      renderAlertLog();
+      // 조용한 알림(정기 위치 보고)은 기록만 남기고 팝업을 띄우지 않는다
+      if (item.silent) return;
+      // 이 기기에서 이미 확인한 시각보다 오래된 것은 다시 띄우지 않는다
+      if (item.at <= since) return;
+      popAlert(item);
+    }, err => console.error(err));
+  }
+}
+
+function popAlert(item){
+  alertQueue.unshift(item);
+  alertQueue = alertQueue.slice(0, 5);
+  renderAlertModal();
+  notifyBrowser(item);
+  // 소리·진동으로도 알린다 (기기가 허용할 때만)
+  if (navigator.vibrate) { try { navigator.vibrate([120, 80, 120]); } catch(e){} }
+}
+
+function renderAlertModal(){
+  if (!alertQueue.length) { $("alertModal").classList.remove("open"); return; }
+  // 지도 버튼은 알림마다 따로 붙인다. 맨 위 알림에만 붙이면, 위치를 물어본 직후
+  // 위치 없는 알림(재부팅 등)이 하나 더 오는 순간 지도를 열 수 없게 된다.
+  $("alertBody").innerHTML = alertQueue.map((a,i)=>`
+    <div class="alert-item ${i===0?"newest":""}">
+      <div class="who">${escapeHtml(a.name)} · ${fmtWhen(a.at)}</div>
+      <div class="msg">${escapeHtml(a.text)}</div>
+      ${a.lat ? `<button class="small" data-map="${i}"
+                   style="margin-top:8px">🗺️ 이 위치를 지도로 보기</button>` : ""}
+    </div>`).join("");
+
+  $("alertBody").querySelectorAll("button[data-map]").forEach(b => {
+    b.onclick = () => {
+      const a = alertQueue[+b.dataset.map];
+      if (a && a.lat) window.open(`https://maps.google.com/?q=${a.lat},${a.lng}`, "_blank");
+      closeAlerts();
+    };
+  });
+
+  $("alertModal").classList.add("open");
+  updateBadge();
+}
+
+function closeAlerts(){
+  const newest = alertQueue[0];
+  if (newest) setLastSeen(newest.at);
+  alertQueue = [];
+  $("alertModal").classList.remove("open");
+  updateBadge();
+}
+$("alertOkBtn").onclick = closeAlerts;
+
+function updateBadge(){
+  const b = $("alertBadge");
+  if (alertQueue.length) { b.style.display = ""; b.textContent = alertQueue.length; }
+  else b.style.display = "none";
+}
+
+function renderAlertLog(){
+  const wrap = $("alertHistWrap");
+  if (!alertLog.length) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  $("alertHist").innerHTML = alertLog.slice(0, 20).map(a =>
+    `<div>${fmtWhen(a.at)} · ${escapeHtml(a.name)} — ${escapeHtml(a.text)}</div>`).join("");
+}
+
+function fmtWhen(at){
+  if (!at) return "-";
+  const d = new Date(at);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---- 브라우저 알림 (화면을 닫아둬도 받기) ----
+function notifyBrowser(item){
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const n = new Notification(`${item.name} - 키즈가드`, {
+      // 위치가 함께 온 알림은 눌러서 바로 지도로 갈 수 있다고 알려준다
+      body: item.lat ? `${item.text}\n(눌러서 지도 보기)` : item.text,
+      tag: item.id,
+    });
+    n.onclick = () => {
+      // 알림을 누르면 이 화면을 앞으로 가져오고, 위치가 있으면 지도까지 연다
+      window.focus();
+      if (item.lat) window.open(`https://maps.google.com/?q=${item.lat},${item.lng}`, "_blank");
+      n.close();
+    };
+  } catch(e){ console.error(e); }
+}
+
+function updateNotifHint(){
+  const btn = $("notifBtn"), hint = $("notifHint");
+  if (!("Notification" in window)) {
+    btn.style.display = "none";
+    hint.textContent = "이 브라우저는 알림을 지원하지 않습니다. 화면을 열어두면 팝업으로 알려드립니다.";
+    return;
+  }
+  if (Notification.permission === "granted") {
+    btn.style.display = "none";
+    hint.textContent = "알림이 켜져 있습니다. 이 화면을 닫아둬도 알림을 받습니다.";
+  } else if (Notification.permission === "denied") {
+    btn.style.display = "none";
+    hint.textContent = "알림이 차단돼 있습니다. 브라우저 설정에서 이 사이트의 알림을 허용해 주세요.";
+  } else {
+    btn.style.display = "";
+    hint.textContent = "아이폰은 이 화면을 홈 화면에 추가한 뒤 앱처럼 열어야 알림을 켤 수 있습니다 (iOS 16.4 이상).";
+  }
+}
+
+$("notifBtn").onclick = async () => {
+  if (!("Notification" in window)) return;
+  try {
+    await Notification.requestPermission();
+  } catch(e){ console.error(e); }
+  updateNotifHint();
+};
 
 function fmtMin(m){
   if (m == null) return "-";
@@ -314,7 +539,7 @@ function render(children){
       }${ovr>0?` · 임시해제 ${ovr}분`:""}</div>
       ${extra>0?`<div class="meta">📱 실제 사용 ${fmtMin(real)} (한도 ${fmtMin(usage)} + 부여 ${extra}분)</div>`:""}
       <div class="meta">오늘 ${usage}분${limit>0?` / ${limit}분`:""}${
-        st.tempC?` · 🌡️ ${Math.round(st.tempC)}℃`:""}</div>
+        st.batteryTempC?` · 🌡️ ${Math.round(st.batteryTempC)}℃`:""}</div>
       ${(!st.locked && st.pendingLockReason) ? `<div class="meta warn">⏳ 지금 잠겨야 하는 상태입니다 (${st.pendingLockReason})${
         st.lockSuppressReason?` — ${st.lockSuppressReason}`:""}</div>` : ""}
       ${(st.locked && st.lockPaused) ? `<div class="meta warn">🔓 지금 잠금이 내려가 있습니다${
@@ -326,6 +551,11 @@ function render(children){
       <div class="meta">📷 거리 감지: ${
         st.distanceGuardOn === false ? "꺼짐"
         : st.cameraActive ? "작동 중" : "⚠️ 대기 중"}</div>
+      <div class="meta ${st.alertReady === false ? "warn" : ""}">🔔 알림: ${
+        st.alertReady === false ? "⚠️ 지금은 알릴 수 없는 상태"
+        : st.hasSms === false ? "팝업 (Lite - 문자 기능 없음)"
+        : (st.alertChannel === 2 ? "문자만 (이 화면에는 안 뜸)"
+           : st.alertChannel === 1 ? "팝업 + 문자" : "팝업")}</div>
       <div class="meta ${stale?"warn":""}">마지막 확인: ${ago(upd)}</div>
       <div class="sep"></div>
       <div class="row">
@@ -467,6 +697,10 @@ function renderSettings(st, isWe, todayIsWe){
   const bedOn= isWe ? !!st.weBedOn            : !!st.wdBedOn;
   const bedS = isWe ? (st.weBedStart ?? 21)   : (st.wdBedStart ?? 21);
   const bedE = isWe ? (st.weBedEnd ?? 7)      : (st.wdBedEnd ?? 7);
+  // 이 자녀 폰이 문자를 보낼 수 있는 빌드(Full)인지.
+  // 정보를 아직 못 받았으면(undefined) 예전 버전일 수 있으니 문자도 있다고 본다.
+  // Lite 자녀에게 '문자만'을 보내면 알림이 한 곳도 가지 않으므로 아예 고르지 못하게 한다.
+  const childHasSms = st.hasSms !== false;
 
   $("sheetBody").innerHTML = `
     <div class="card">
@@ -539,14 +773,27 @@ function renderSettings(st, isWe, todayIsWe){
     </div>
 
     <div class="card">
-      <div class="grp">📍 위치 · 알림</div>
-      ${sw("위치 문자 보내기","location_enabled", !!st.locationOn)}
+      <div class="grp">📍 위치 · 보호자 알림</div>
+      ${childHasSms
+        ? seg("🔔 알림 방식","alert_channel", st.alertChannel ?? 0,
+            ["팝업","팝업+문자","문자만"],
+            ["팝업 — 이 화면과 안드로이드 부모 앱에 알림 창이 뜹니다. 문자 요금이 들지 않습니다.",
+             "팝업+문자 — 보호자 번호로 문자도 함께 갑니다. 인터넷이 끊긴 곳에서도 받을 수 있지만 요금이 듭니다.",
+             "문자만 — 예전 방식입니다. 이 화면에는 알림이 뜨지 않습니다."][st.alertChannel ?? 0])
+        : `<div class="grp" style="margin-top:12px">🔔 알림 방식</div>
+           <div class="hint">팝업 (이 자녀 폰은 Lite 버전이라 문자 기능이 없습니다).
+           이 화면과 안드로이드 부모 앱에 알림 창이 뜹니다. 문자로도 받으려면 자녀 폰에 Full 버전을 설치하세요.</div>`}
+      ${st.alertReady === false ? `<div class="hint" style="color:var(--danger)">
+        ⚠️ 지금은 알릴 수 없는 상태입니다. '문자만'인데 보호자 번호나 문자 권한이 없을 때 이렇게 됩니다.</div>` : ""}
+      <div class="sep"></div>
+      ${sw("위치 알림 보내기","location_enabled", !!st.locationOn)}
       ${sl("정기 발송 간격","location_interval_min", st.locIntervalMin ?? 60, 10, 240, 10, " 분")}
-      ${sw("'위치' 문자 오면 답장","sms_request_enabled", !!st.smsRequestOn)}
+      ${childHasSms ? sw("'위치' 문자 오면 답장","sms_request_enabled", !!st.smsRequestOn,
+           "부모 앱·이 화면의 '위치 요청' 버튼과 별개로, 문자·카톡으로 '위치'라고 보내도 답하게 합니다.") : ""}
       ${sw("안전 구역 이탈 알림","geofence_mode", !!st.geoModeOn)}
       ${sl("구역 반경","geofence_radius_m", st.geoRadiusM ?? 500, 100, 3000, 100, " m")}
       ${sl("구역 밖 발송 간격","outside_interval_min", st.outIntervalMin ?? 120, 10, 360, 10, " 분")}
-      ${sw("구역 복귀 문자","return_sms_enabled", !!st.returnSmsOn)}
+      ${sw("구역 복귀 알림","return_sms_enabled", !!st.returnSmsOn)}
       ${sw("재부팅 알림","boot_sms_enabled", !!st.bootSmsOn)}
       ${sw("삭제 시도 알림","tamper_alert_enabled", !!st.tamperAlertOn)}
     </div>
@@ -620,7 +867,8 @@ function renderSettings(st, isWe, todayIsWe){
   const fam   = localStorage.getItem("kg_fam");
   const famId = localStorage.getItem("kg_famId");
   const pin   = localStorage.getItem("kg_pin");
-  $("verLine").textContent = "웹 v1.0";
+  $("verLine").textContent = "웹 v1.1 (자녀 알림 팝업)";
+  updateNotifHint();
   if (!fam || !pin) return;
   try {
     const cred = await signInAnonymously(auth);
