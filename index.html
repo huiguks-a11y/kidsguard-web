@@ -526,6 +526,11 @@ function render(children){
     const limit  = st.dailyLimitMin ?? 0;
     const extra  = Math.max(0, real - usage);
     const ovr    = st.overrideRemainMin ?? 0;
+    // 서비스가 끊겨 세지 못한 시간 (사용 시간이 실제보다 적게 나오는 원인)
+    const gapMin = st.gapMin ?? 0;
+    const gapCnt = st.gapCount ?? 0;
+    // 잠금 중 허용 앱(전화·카톡)을 쓴 시간 — 하루 한도에서 깎이지 않는다
+    const allowMin = st.allowedUsageMin ?? 0;
 
     const el = document.createElement("div");
     el.className = "card";
@@ -538,6 +543,9 @@ function render(children){
                : "사용 가능"
       }${ovr>0?` · 임시해제 ${ovr}분`:""}</div>
       ${extra>0?`<div class="meta">📱 실제 사용 ${fmtMin(real)} (한도 ${fmtMin(usage)} + 부여 ${extra}분)</div>`:""}
+      ${allowMin>0?`<div class="meta">💬 잠금 중 허용 앱 사용 ${fmtMin(allowMin)} (전화·카톡 등 — 한도에서 깎이지 않음)</div>`:""}
+      ${gapCnt>0?`<div class="meta warn">⏱️ 오늘 앱이 ${gapCnt}번 끊겼습니다${
+        gapMin>0?` (약 ${gapMin}분은 세지 못했을 수 있음)`:""} — 배터리 최적화 제외를 켜면 줄어듭니다</div>`:""}
       <div class="meta">오늘 ${usage}분${limit>0?` / ${limit}분`:""}${
         st.batteryTempC?` · 🌡️ ${Math.round(st.batteryTempC)}℃`:""}</div>
       ${(!st.locked && st.pendingLockReason) ? `<div class="meta warn">⏳ 지금 잠겨야 하는 상태입니다 (${st.pendingLockReason})${
@@ -669,6 +677,25 @@ function sl(label, key, val, min, max, step, unit){
     <input type="range" data-sl="${key}" min="${min}" max="${max}" step="${step}" value="${val}"
            data-unit="${unit||""}">`;
 }
+/**
+ * 어둡기를 눈으로 가늠하게 보여주는 띠.
+ * 밝은 바탕 위에 실제 비율만큼 검게 덮는다. (자녀 폰의 '미리보기'는 실제 화면을 덮어 보여준다)
+ */
+function dimSwatch(pct){
+  const near = Math.min(pct + 30, 85);
+  const cell = (p, label) => `
+    <div style="flex:1">
+      <div style="position:relative;height:44px;border-radius:8px;overflow:hidden;background:#FFF3C4">
+        <div style="position:absolute;inset:0;background:rgba(0,0,0,${p/100})"></div>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+                    color:#fff;font-size:13px;font-weight:600">${p}%</div>
+      </div>
+      <div class="hint" style="text-align:center;margin-top:2px">${label}</div>
+    </div>`;
+  return `<div style="display:flex;gap:8px;margin-top:6px">
+    ${cell(pct, "기준 거리")}${cell(near, "더 가까울 때")}</div>`;
+}
+
 function seg(label, key, cur, opts, hint){
   return `<div class="grp" style="margin-top:12px">${label}</div>
     <div class="seg">${opts.map((o,i)=>
@@ -701,6 +728,7 @@ function renderSettings(st, isWe, todayIsWe){
   // 정보를 아직 못 받았으면(undefined) 예전 버전일 수 있으니 문자도 있다고 본다.
   // Lite 자녀에게 '문자만'을 보내면 알림이 한 곳도 가지 않으므로 아예 고르지 못하게 한다.
   const childHasSms = st.hasSms !== false;
+  const dimPct = st.dimPercent ?? 50;
 
   $("sheetBody").innerHTML = `
     <div class="card">
@@ -734,6 +762,11 @@ function renderSettings(st, isWe, todayIsWe){
            "끄면 카메라를 쓰지 않아 화면이 어두워지거나 차단되지 않습니다. 시간 제한·위치·원격 제어는 그대로예요.")}
       ${sl("최소 거리","min_distance_cm", st.minDistanceCm ?? 30, 15, 60, 1, " cm")}
       <div class="hint">이 거리보다 가까워지면 화면이 어두워집니다.</div>
+      ${sl("어둡기","dim_percent", dimPct, 20, 85, 5, " %")}
+      ${dimSwatch(dimPct)}
+      <div class="hint">${dimPct >= 75
+        ? "⚠️ 너무 어두우면 아이 얼굴에 빛이 닿지 않아 카메라가 얼굴을 놓치고, 멀어져도 화면이 안 밝아질 수 있습니다."
+        : "기준 거리에 닿으면 이만큼 어두워지고, 더 가까워지면 30%p 더 어두워집니다. 권장 50~70%."}</div>
       ${sl("해제 여유","release_margin_cm", st.releaseMarginCm ?? 2, 0, 10, 1, " cm")}
       ${sw("더 가까우면 화면 완전 차단","blackout_enabled", !!st.blackoutOn)}
       ${sl("완전 차단 거리","blackout_distance_cm", st.blackoutCm ?? 14, 8, 40, 1, " cm")}
