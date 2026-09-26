@@ -531,6 +531,8 @@ function render(children){
     const gapCnt = st.gapCount ?? 0;
     // 잠금 중 허용 앱(전화·카톡)을 쓴 시간 — 하루 한도에서 깎이지 않는다
     const allowMin = st.allowedUsageMin ?? 0;
+    // 하루 한도를 다 썼을 때 허용 범위 (0=전부차단 1=전화만 2=평소대로)
+    const limitAllow = st.limitLockAllow ?? 1;
 
     const el = document.createElement("div");
     el.className = "card";
@@ -586,6 +588,17 @@ function render(children){
       </div>
       <div class="hint">누르면 잠금이 풀리고 그 시간만큼 쓸 수 있습니다. 남은 시간이 있으면 더해집니다.</div>
       <div style="height:8px"></div>
+      <div class="grp" style="font-size:14px">⏳ 한도를 다 썼을 때</div>
+      <div class="seg">
+        ${[["전부 차단",0],["전화만",1],["평소대로",2]].map(([lab,v])=>
+          `<button class="${limitAllow===v?"on":""}" data-limit="${v}" data-cid="${cid}">${lab}</button>`
+        ).join("")}
+      </div>
+      <div class="hint">${
+        limitAllow===0 ? "전부 차단 — 전화·문자·카톡 모두 막습니다. 부모님이 옆에 있을 때 쓰세요."
+        : limitAllow===1 ? "전화만 — 급한 전화는 되지만 문자·카톡은 막습니다. 아이 혼자 있을 때 쓰세요."
+        : "평소대로 — 설정에서 켠 항목(전화·문자·허용 앱)을 그대로 쓸 수 있습니다."}</div>
+      <div style="height:8px"></div>
       <div class="row">
         <button class="small" data-cmd="PING" data-cid="${cid}">🔄 새로고침</button>
         <button class="small" data-cmd="REQUEST_LOCATION" data-cid="${cid}">📍 위치 요청</button>
@@ -600,6 +613,10 @@ function render(children){
 
   box.querySelectorAll("button[data-cmd]").forEach(b => {
     b.onclick = () => sendCmd(b.dataset.cid, b.dataset.cmd, +(b.dataset.min||0), b);
+  });
+  // '한도를 다 썼을 때' 빠른 전환 (부모와 같이 있을 때 / 따로 있을 때)
+  box.querySelectorAll("button[data-limit]").forEach(b => {
+    b.onclick = () => setValFor(b.dataset.cid, "limit_lock_allow", b.dataset.limit, b);
   });
   box.querySelectorAll("button[data-settings]").forEach(b => {
     b.onclick = () => openSettings(b.dataset.settings, children[b.dataset.settings]);
@@ -630,6 +647,26 @@ function renderHist(st){
       ex>0?` <span style="opacity:.7">(한도 ${fmtMin(m)} + 부여 ${ex}분)</span>`:""}</div>`;
   }).join("");
   return `<details><summary>📅 날짜별 사용 시간</summary><div class="hist">${rows}</div></details>`;
+}
+
+/**
+ * 자녀 카드에서 설정 한 개를 바로 바꾼다.
+ * 설정 시트의 setVal 은 '지금 열어둔 아이'에게만 보내므로,
+ * 목록 화면에서는 자녀 ID를 직접 받는 이 함수를 쓴다.
+ */
+async function setValFor(cid, key, value, btn){
+  if (btn) btn.disabled = true;
+  try {
+    await set(ref(db, `families/${familyId}/children/${cid}/command`), {
+      type: "SET_VALUE", minutes: 0, payload: `${key}=${value}`,
+      issuedAt: Date.now(), issuedBy: "web"
+    });
+    toast("전송했습니다");
+  } catch (e) {
+    console.error(e); toast("전송 실패 — 인터넷을 확인해 주세요");
+  } finally {
+    if (btn) setTimeout(()=>{ btn.disabled = false; }, 800);
+  }
 }
 
 async function sendCmd(cid, type, minutes, btn){
@@ -797,6 +834,13 @@ function renderSettings(st, isWe, todayIsWe){
 
     <div class="card">
       <div class="grp">📞 잠금 중 허용</div>
+      ${seg("⏳ 한도를 다 썼을 때","limit_lock_allow", st.limitLockAllow ?? 1,
+        ["전부 차단","전화만","평소대로"],
+        ["전부 차단 — 전화·문자·카톡 모두 막습니다. 부모님이 옆에 있을 때 쓰세요.",
+         "전화만 — 급한 전화는 되지만 문자·카톡은 막습니다. 아이 혼자 있을 때 쓰세요.",
+         "평소대로 — 아래에서 켠 항목을 그대로 쓸 수 있습니다."][st.limitLockAllow ?? 1])}
+      <div class="sep"></div>
+      <div class="hint">아래는 <b>휴식·취침</b> 잠금에서 허용할 항목입니다.</div>
       ${sw("전화 허용","allow_calls", !!st.allowCalls)}
       ${sw("문자 허용","allow_sms", !!st.allowSms)}
       ${sw("허용 앱 시간대 제한","allowed_apps_window_on", !!st.appsWindowOn)}
