@@ -531,6 +531,9 @@ function render(children){
     const gapCnt = st.gapCount ?? 0;
     // 잠금 중 허용 앱(전화·카톡)을 쓴 시간 — 하루 한도에서 깎이지 않는다
     const allowMin = st.allowedUsageMin ?? 0;
+    // 오늘 연장 기록 ("HH:mm|출처|분" 을 ";" 로 이음) — 누가 연장했는지
+    const extendItems = (st.extendLog || "").split(";").filter(Boolean).map(s => s.split("|"));
+    const extendFromChild = extendItems.some(f => (f[1]||"").startsWith("자녀 폰"));
     // 하루 한도를 다 썼을 때 허용 범위 (0=전부차단 1=전화만 2=평소대로)
     const limitAllow = st.limitLockAllow ?? 1;
     // 부모가 예약한 풀리는 시각 / 잠기는 시각 (end 가 0 이면 예약 없음)
@@ -552,8 +555,15 @@ function render(children){
                : st.pendingLockReason ? `⏳ 폰을 켜면 잠김 (${st.pendingLockReason})`
                : "사용 가능"
       }${ovr>0?` · 임시해제 ${ovr}분`:""}</div>
-      ${extra>0?`<div class="meta">📱 실제 사용 ${fmtMin(real)} (한도 ${fmtMin(usage)} + 부여 ${extra}분)</div>`:""}
-      ${allowMin>0?`<div class="meta">💬 잠금 중 허용 앱 사용 ${fmtMin(allowMin)} (전화·카톡 등 — 한도에서 깎이지 않음)</div>`:""}
+      <div class="meta" style="color:var(--text);font-weight:600">📱 오늘 총 ${fmtMin(real + allowMin)}</div>
+      <div class="meta">&nbsp;&nbsp;⏱️ 한도 사용 ${fmtMin(usage)}${limit>0?` / ${fmtMin(limit)}`:""}</div>
+      <div class="meta">&nbsp;&nbsp;🔓 연장·특별 시간에 쓴 시간 ${fmtMin(extra)}${extra>0?" (한도에서 안 깎임)":""}</div>
+      <div class="meta">&nbsp;&nbsp;💬 허용 앱 (잠금·연장 중) ${fmtMin(allowMin)}${allowMin>0?" (전화·카톡 등, 한도에서 안 깎임)":""}</div>
+      ${extendItems.length?`<div class="meta ${extendFromChild?"warn":""}" style="font-weight:600">🔓 오늘 연장 ${extendItems.length}회${
+        extendFromChild?" — ⚠️ 자녀 폰에서 PIN으로 연장한 기록이 있습니다":""}</div>
+        ${extendItems.slice(-5).reverse().map(f=>
+          `<div class="meta">&nbsp;&nbsp;${escapeHtml(f[0]||"")} &nbsp;${escapeHtml(f[1]||"")} &nbsp;+${escapeHtml(f[2]||"?")}분</div>`
+        ).join("")}`:""}
       ${gapCnt>0?`<div class="meta warn">⏱️ 오늘 앱이 ${gapCnt}번 끊겼습니다${
         gapMin>0?` (약 ${gapMin}분은 세지 못했을 수 있음)`:""} — 배터리 최적화 제외를 켜면 줄어듭니다</div>`:""}
       <div class="meta">오늘 ${usage}분${limit>0?` / ${limit}분`:""}${
