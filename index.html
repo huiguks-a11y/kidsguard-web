@@ -563,7 +563,7 @@ function render(children){
       <div class="meta">&nbsp;&nbsp;🔓 연장·특별 시간에 쓴 시간 ${fmtMin(extra)}${extra>0?" (한도에서 안 깎임)":""}</div>
       <div class="meta">&nbsp;&nbsp;💬 허용 앱 ${st.allowedAppsFree?"(별도 허용)":"(잠금·연장 중)"} ${fmtMin(allowMin)}${allowMin>0?" (전화·카톡 등, 한도에서 안 깎임)":""}</div>
       ${extendItems.length?`<div class="meta ${extendFromChild?"warn":""}" style="font-weight:600">🔓 오늘 연장 ${extendItems.length}회${
-        extendFromChild?" — ⚠️ 자녀 폰에서 PIN으로 연장한 기록이 있습니다":""}</div>
+        extendFromChild?" — ⚠️ 자녀 폰에서 PIN으로 연장한 기록이 있습니다. 부모님이 한 게 아니라면 PIN을 바꾸고, 설정에서 '자녀 폰에서 PIN으로 연장 허용'을 끄세요.":""}</div>
         ${extendItems.slice(-5).reverse().map(f=>
           `<div class="meta">&nbsp;&nbsp;${escapeHtml(f[0]||"")} &nbsp;${escapeHtml(f[1]||"")} &nbsp;+${escapeHtml(f[2]||"?")}분</div>`
         ).join("")}`:""}
@@ -906,6 +906,13 @@ function renderSettings(st, isWe, todayIsWe){
         ["전부 차단 — 전화·문자·카톡 모두 막습니다. 부모님이 옆에 있을 때 쓰세요.",
          "전화만 — 급한 전화는 되지만 문자·카톡은 막습니다. 아이 혼자 있을 때 쓰세요.",
          "평소대로 — 아래에서 켠 항목을 그대로 쓸 수 있습니다."][st.limitLockAllow ?? 1])}
+      <div class="sep"></div>
+      ${st.childPinExtend === undefined
+        ? `<div class="hint">🔐 자녀 폰에서 PIN 연장을 막는 설정은 자녀 앱을 최신 버전으로 업데이트해야 쓸 수 있습니다.</div>`
+        : sw("자녀 폰에서 PIN으로 연장 허용","child_pin_extend", st.childPinExtend !== false,
+            st.childPinExtend === false
+              ? "꺼짐 — 자녀 폰의 PIN 화면에는 '설정만 보기'만 남고, 연장은 부모 앱과 이 화면에서만 됩니다."
+              : "켜짐 — 자녀 폰에서 PIN을 넣으면 연장할 수 있습니다. 연장 기록에 '자녀 폰 … (PIN)'이 보이는데 부모님이 한 게 아니라면 꺼 두고 PIN도 바꾸세요.")}
       <div class="sep"></div>
       ${st.allowedAppsFree === undefined
         ? `<div class="hint">⏱️ 평소 허용 앱 시간을 한도와 별도로 세는 설정은 자녀 앱을 최신 버전으로 업데이트해야 쓸 수 있습니다.</div>`
